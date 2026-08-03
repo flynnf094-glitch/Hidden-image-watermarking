@@ -14,8 +14,6 @@ if nargin < 5
     numBitsUsed = 1;
 end
 
-% MODIFICATION: We now treat numBitsUsed as the specific bit plane (1-8)
-% to embed in, which acts as the embed strength.
 % validate numBitsUsed is in range 1-8
 if numBitsUsed < 1 || numBitsUsed > 8
     error('numBitsUsed must be between 1 and 8.');
@@ -68,51 +66,67 @@ imgLengthArray = logical(u32Length(:)' - '0');
 % Pack metadata bits to start of watermark bits array
 watermarkBits = [imgWArray'; imgHArray'; imgLengthArray'; watermarkBits];
 
-% MODIFICATION: We embed exactly 1 bit per pixel now.
-maxCapacity = imgH * imgW;
+% MODIFICATION: We embed the watermark in small blocks and scramble the order 
+% to resist blur, jpeg compression, and crop attacks.
+
+% We repeat the bits across blocks of size block_size x block_size
+% A larger block size gives better resistance to blur and jpeg compression.
+block_size = 8;
+num_blocks_h = floor(imgH / block_size);
+num_blocks_w = floor(imgW / block_size);
+num_blocks = num_blocks_h * num_blocks_w;
+
+totalBitsToEmbed = length(watermarkBits);
 
 %check whether the watermark fits in the image
-if (numWatermarkBits + 64) > maxCapacity
-    error('Watermark is too large for this image. Need %d pixels but only %d available.', ...
-        (numWatermarkBits + 64), imgH * imgW);
+if totalBitsToEmbed > num_blocks
+    error('Watermark is too large for this image. Need %d blocks but only %d available.', ...
+        totalBitsToEmbed, num_blocks);
 end
+
+% Assign blocks to watermark bits randomly (scrambled) to survive cropping
+rng(12345); % Fixed seed for reproducible retrieval
+
+% Calculate how many times each bit can be repeated
+reps = floor(num_blocks / totalBitsToEmbed);
+block_to_bit = repmat(1:totalBitsToEmbed, reps, 1);
+block_to_bit = block_to_bit(:);
+
+% Map remaining blocks randomly
+rem_blocks = num_blocks - length(block_to_bit);
+block_to_bit = [block_to_bit; randi(totalBitsToEmbed, rem_blocks, 1)];
+
+% Scramble the block assignments
+block_to_bit = block_to_bit(randperm(num_blocks));
+
+% Map each pixel to its corresponding block
+[cols, rows] = meshgrid(1:imgW, 1:imgH);
+block_r = floor((rows - 1) / block_size) + 1;
+block_c = floor((cols - 1) / block_size) + 1;
+
+% Linear index of the block
+block_idx = (block_c - 1) * num_blocks_h + block_r;
+
+% Handle pixels that fall outside the full blocks (if image is not divisible by block_size)
+% We'll map them to the last block safely
+block_idx(block_idx > num_blocks) = num_blocks;
+
+% Get the target bit index for every pixel in the image
+pixel_target_bit_idx = block_to_bit(block_idx);
+
+% Create a matrix of the bits to embed for every pixel
+bits_to_embed = watermarkBits(pixel_target_bit_idx);
 
 %extract the blue channel for embedding
 blueChannel = img(:, :, 3);
 
-%convert to double for bit manipulation
-blueDouble = double(blueChannel);
-
-% Store total bits to embed (payload + 64-bit header that was prepended above)
-totalBitsToEmbed = length(watermarkBits);
-
-% MODIFICATION: Change embed order to a pseudo-random permutation to 
-% distribute the watermark across the image.
-rng(12345); % Fixed seed for reproducible retrieval
-embedOrder = randperm(imgH * imgW);
-
-for i = 1:totalBitsToEmbed
-    pixelIndex = embedOrder(i);
-    pixelVal = blueDouble(pixelIndex);
-
-    % MODIFICATION: Change numBitsUsed to act as embed strength (bit plane).
-    % We embed exactly 1 bit at the specified bit plane.
-    
-    % Clear the target bit plane
-    pixelVal = bitset(uint8(pixelVal), numBitsUsed, 0);
-    
-    % Embed the watermark bit
-    if watermarkBits(i)
-        pixelVal = bitset(pixelVal, numBitsUsed, 1);
-    end
-
-    %store back
-    blueDouble(pixelIndex) = double(pixelVal);
-end
+% MODIFICATION: Change numBitsUsed to act as embed strength (bit plane).
+% We embed exactly 1 bit at the specified bit plane for every pixel.
+watermarkedBlueChannel = bitset(blueChannel, numBitsUsed, bits_to_embed);
 
 %replace the blue channel with the modified one
 watermarkedImg = img;
-watermarkedImg(:, :, 3) = uint8(blueDouble);
+watermarkedImg(:, :, 3) = watermarkedBlueChannel;
 
 %save the watermarked image
 imwrite(watermarkedImg, outputImagePath);
@@ -129,7 +143,8 @@ metadata.watermarkWidth = wmW;
 metadata.numWatermarkBits = numWatermarkBits;
 metadata.numBitsUsed = numBitsUsed;
 metadata.embeddingChannel = 'Blue (channel 3)';
-metadata.embeddingOrder = 'Pseudo-random order';
+metadata.embeddingOrder = 'Scrambled block repetition';
+metadata.blockSize = block_size;
 
 %convert metadata to JSON
 jsonText = jsonencode(metadata);
