@@ -40,6 +40,15 @@ attackList(end).path = outputPath;
 % ============================================================
 % Attack 1: JPEG compression
 % ============================================================
+%
+% WHY THIS DESTROYS LSB WATERMARKS:
+% JPEG uses lossy DCT-based quantization.  Quantization rounds coefficients
+% to the nearest step size, which alters pixel values by ±several units on
+% average.  Even a single-unit change flips a 1-bit LSB.  At quality 50
+% the rounding errors are large enough to corrupt virtually every embedded
+% LSB, making the recovered watermark indistinguishable from noise.
+% DCT-domain watermarks survive because they embed into mid-frequency
+% coefficients that quantization preserves much better than the LSBs.
 
 attackName = 'jpeg_q50';
 
@@ -56,6 +65,16 @@ attackList(end).path = outputPath;
 % ============================================================
 % Attack 2: Gaussian noise
 % ============================================================
+%
+% WHY THIS DESTROYS LSB WATERMARKS:
+% LSB embedding stores data in the least significant 1-4 bits of pixel
+% values, representing changes of 1 to 15 out of 255.  Adding Gaussian
+% noise with noiseSigma = 10 shifts pixel values by ~10 on average --
+% roughly 10x the magnitude of a single LSB change.  Nearly every pixel
+% is shifted by more than 1, so nearly every embedded bit is flipped.
+% The 64-bit header (width / height / length fields) is equally destroyed,
+% forcing retrieval to fall back to the JSON metadata file; but even with
+% correct metadata the payload bits are all corrupted.
 
 attackName = 'gaussian_noise';
 
@@ -96,6 +115,21 @@ attackList(end).path = outputPath;
 % ============================================================
 % Attack 4: center crop 80%, then resize back
 % ============================================================
+%
+% WHY THIS DESTROYS LSB WATERMARKS:
+% LSB embedding reads and writes pixels in a fixed raster order (column-
+% major in MATLAB's linear indexing).  Cropping 80% of the center and
+% nearest-neighbor resizing back to the original dimensions remaps every
+% pixel: the value at index k in the resized image was originally at a
+% different index k' in the watermarked image.  When lsb_retrieve reads
+% pixels in the original raster order it therefore reads bits from the
+% wrong physical locations.  The 64-bit header is destroyed first, which
+% causes the headerValid check to fail; even with the JSON fallback, all
+% payload bits are read from misaligned pixel positions and the recovered
+% watermark is meaningless.
+% DCT-domain methods are also harmed by cropping but can be made more
+% resilient by embedding in global frequency components rather than fixed
+% spatial positions.
 
 attackName = 'crop80_resize';
 
