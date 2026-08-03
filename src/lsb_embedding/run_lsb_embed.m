@@ -27,6 +27,6 @@ disp(inputImagePath)
 disp(exist(inputImagePath, 'file'))
 
 % Number of LSBs to use for embedding (1 = most invisible, up to 4)
-numBitsUsed = 1;
+numBitsUsed = 6;
 
 lsb_embed(inputImagePath, watermarkPath, outputImagePath, metadataPath, numBitsUsed);
