@@ -49,6 +49,24 @@ end
 %   bits 1-16  = watermark width
 %   bits 17-32 = watermark height
 %   bits 33-64 = number of watermark bits
+%
+% WHY HEADER DECODING FAILS AFTER ATTACKS:
+%
+%   Gaussian noise / JPEG compression:
+%     The first 64 pixels of the blue channel carry the header bits.  Both
+%     attacks modify pixel values, flipping LSBs at random.  Even a single
+%     flipped bit in the width/height/length fields produces a completely
+%     wrong value, causing headerValid to be set false and forcing a fall-
+%     back to the JSON file.  Even when the JSON supplies correct metadata,
+%     the payload bits (pixels 65 onward) are equally corrupted, so the
+%     reconstructed watermark is mostly noise.
+%
+%   Crop + resize:
+%     Cropping 80% of the image and nearest-neighbor resizing back changes
+%     which original pixel occupies each (row, col) position.  The bit read
+%     from pixel index 1 now comes from a different original pixel than the
+%     one the embedder wrote to, so the entire bit stream -- header and
+%     payload alike -- is misaligned and meaningless.
 
 wmW = bin2dec(char(allBits(1:16).' + '0'));
 wmH = bin2dec(char(allBits(17:32).' + '0'));

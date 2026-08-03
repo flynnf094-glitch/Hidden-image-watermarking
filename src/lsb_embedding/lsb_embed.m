@@ -79,12 +79,26 @@ watermarkBits = [imgWArray'; imgHArray'; imgLengthArray'; watermarkBits];
 
 %calculate the maximum number of bits we can embed
 %using the blue channel with the specified number of LSBs
-maxCapacity = (imgH * imgW * numBitsUsed) + 64;
+
+% BUG FIX: the original line incorrectly added 64 to the true image capacity,
+% which could allow overly large watermarks to pass the check.
+% The actual capacity is strictly the number of pixels times bits-per-pixel.
+%
+% ORIGINAL (buggy):
+%   maxCapacity = (imgH * imgW * numBitsUsed) + 64;
+%
+% After prepending the 64-bit header, the total bits to embed is
+% (numWatermarkBits + 64), so the check must compare that total against
+% the true capacity.
+maxCapacity = imgH * imgW * numBitsUsed; % FIX: removed erroneous + 64
 
 %check whether the watermark fits in the image
-if numWatermarkBits > maxCapacity
+% ORIGINAL (buggy):
+%   if numWatermarkBits > maxCapacity
+% FIX: compare total bits (payload + 64-bit header) against true capacity
+if (numWatermarkBits + 64) > maxCapacity
     error('Watermark is too large for this image with %d LSB bit(s). Need %d pixels but only %d available.', ...
-        numBitsUsed, ceil(numWatermarkBits / numBitsUsed), imgH * imgW);
+        numBitsUsed, ceil((numWatermarkBits + 64) / numBitsUsed), imgH * imgW);
 end
 
 %extract the blue channel for embedding
@@ -97,10 +111,42 @@ blueDouble = double(blueChannel);
 
 %embed the watermark bits into the LSBs of the blue channel
 %we traverse pixels in raster order (row by row, left to right)
+%
+% NOTE ON LSB FRAGILITY:
+% LSB watermarking stores data in the 1-2 least significant bits of each pixel.
+% These bits are the first to be destroyed by any signal processing:
+%
+%   Gaussian noise (sigma=10): adds random offsets averaging ~10 to pixel values.
+%   A 1-bit change is only 1 unit, so noise with sigma=10 almost always flips
+%   the embedded LSBs, corrupting the entire watermark payload and header.
+%
+%   JPEG compression (quality 50): uses lossy DCT quantization that rounds
+%   pixel values to the nearest quantization step. LSBs are the bits that
+%   quantization rounding changes first, so virtually every embedded bit is
+%   flipped after JPEG re-encoding.
+%
+%   Crop + resize: after cropping 80% of the image and nearest-neighbor
+%   resizing back to the original dimensions, the pixel at position (r,c)
+%   in the output comes from a different (r',c') in the watermarked image.
+%   When lsb_retrieve reads pixels in the original raster order it therefore
+%   reads bits from the wrong physical locations, corrupting both the 64-bit
+%   header (so the size/length fields become garbage) and every payload bit.
+
+% Store total bits to embed (payload + 64-bit header that was prepended above)
+totalBitsToEmbed = length(watermarkBits); % = numWatermarkBits + 64
+
 bitIndex = 1;
 
 for pixelIndex = 1:(imgH * imgW)
-    if bitIndex > numWatermarkBits
+    % BUG FIX: the original condition was (bitIndex > numWatermarkBits).
+    % After prepending the 64-bit header, watermarkBits has
+    % (numWatermarkBits + 64) entries.  Breaking at numWatermarkBits left
+    % the last 64 payload bits unembedded, corrupting retrieval even on an
+    % unattacked image.
+    %
+    % ORIGINAL (buggy):
+    %   if bitIndex > numWatermarkBits
+    if bitIndex > totalBitsToEmbed % FIX: use total length including header
         break;
     end
 
