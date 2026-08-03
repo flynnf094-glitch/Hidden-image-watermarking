@@ -3,8 +3,9 @@ function lsb_retrieve(inputImagePath, outputWatermarkPath, ...
 
 metadataLength = 64;
 
-if numBitsUsed < 1 || numBitsUsed > 4
-    error('numBitsUsed must be between 1 and 4.');
+% MODIFICATION: We now treat numBitsUsed as the specific bit plane (1-8)
+if numBitsUsed < 1 || numBitsUsed > 8
+    error('numBitsUsed must be between 1 and 8.');
 end
 
 % Read attacked/watermarked image
@@ -19,24 +20,21 @@ end
 % Extract blue channel
 blueChannel = img(:, :, 3);
 
-% Extract every embedded LSB in the same order used during embedding
-maxExtractableBits = imgH * imgW * numBitsUsed;
+% Extract every embedded bit in the same pseudo-random order used during embedding
+% MODIFICATION: 1 bit per pixel now
+maxExtractableBits = imgH * imgW;
 allBits = zeros(maxExtractableBits, 1, 'uint8');
 
-bitIndex = 1;
+% MODIFICATION: Use the same fixed seed for the pseudo-random permutation
+rng(12345);
+embedOrder = randperm(imgH * imgW);
 
-for pixelIndex = 1:(imgH * imgW)
-
+for i = 1:maxExtractableBits
+    pixelIndex = embedOrder(i);
     pixelValue = blueChannel(pixelIndex);
 
-    for b = 1:numBitsUsed
-
-        % Embedding placed the first bit in the highest used LSB
-        bitPosition = numBitsUsed - b + 1;
-
-        allBits(bitIndex) = bitget(pixelValue, bitPosition);
-        bitIndex = bitIndex + 1;
-    end
+    % MODIFICATION: Extract from the specific bit plane
+    allBits(i) = bitget(pixelValue, numBitsUsed);
 end
 
 if length(allBits) < metadataLength
@@ -44,36 +42,11 @@ if length(allBits) < metadataLength
 end
 
 %% Decode embedded header
-%
-% The embedding script stores:
-%   bits 1-16  = watermark width
-%   bits 17-32 = watermark height
-%   bits 33-64 = number of watermark bits
-%
-% WHY HEADER DECODING FAILS AFTER ATTACKS:
-%
-%   Gaussian noise / JPEG compression:
-%     The first 64 pixels of the blue channel carry the header bits.  Both
-%     attacks modify pixel values, flipping LSBs at random.  Even a single
-%     flipped bit in the width/height/length fields produces a completely
-%     wrong value, causing headerValid to be set false and forcing a fall-
-%     back to the JSON file.  Even when the JSON supplies correct metadata,
-%     the payload bits (pixels 65 onward) are equally corrupted, so the
-%     reconstructed watermark is mostly noise.
-%
-%   Crop + resize:
-%     Cropping 80% of the image and nearest-neighbor resizing back changes
-%     which original pixel occupies each (row, col) position.  The bit read
-%     from pixel index 1 now comes from a different original pixel than the
-%     one the embedder wrote to, so the entire bit stream -- header and
-%     payload alike -- is misaligned and meaningless.
-
 wmW = bin2dec(char(allBits(1:16).' + '0'));
 wmH = bin2dec(char(allBits(17:32).' + '0'));
 numWatermarkBits = bin2dec(char(allBits(33:64).' + '0'));
 
 %% Check whether embedded header is valid
-
 headerValid = true;
 
 if wmH < 1 || wmW < 1
@@ -89,7 +62,6 @@ if metadataLength + numWatermarkBits > length(allBits)
 end
 
 %% Fall back to JSON metadata
-
 if ~headerValid
 
     warning('Embedded LSB header is corrupted. Using JSON metadata.');
@@ -128,23 +100,17 @@ if ~headerValid
         numBitsUsed = double(metadata.numBitsUsed);
 
         % Re-extract bits using the JSON numBitsUsed value
-        maxExtractableBits = imgH * imgW * numBitsUsed;
+        maxExtractableBits = imgH * imgW;
         allBits = zeros(maxExtractableBits, 1, 'uint8');
 
-        bitIndex = 1;
+        rng(12345);
+        embedOrder = randperm(imgH * imgW);
 
-        for pixelIndex = 1:(imgH * imgW)
-
+        for i = 1:maxExtractableBits
+            pixelIndex = embedOrder(i);
             pixelValue = blueChannel(pixelIndex);
-
-            for b = 1:numBitsUsed
-                bitPosition = numBitsUsed - b + 1;
-
-                allBits(bitIndex) = ...
-                    bitget(pixelValue, bitPosition);
-
-                bitIndex = bitIndex + 1;
-            end
+            
+            allBits(i) = bitget(pixelValue, numBitsUsed);
         end
     end
 
@@ -163,14 +129,12 @@ if ~headerValid
 end
 
 %% Retrieve watermark data
-
 watermarkStart = metadataLength + 1;
 watermarkEnd = metadataLength + numWatermarkBits;
 
 watermarkBits = allBits(watermarkStart:watermarkEnd);
 
 %% Reconstruct and save watermark
-
 reconstructedWatermark = reshape( ...
     logical(watermarkBits), [wmH, wmW]);
 

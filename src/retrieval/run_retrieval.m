@@ -64,7 +64,7 @@ lsbOutputFiles = {
     'lsb_crop80_resize_extracted_watermark.png'
 };
 
-numBitsUsed = 1;
+numBitsUsed = 6;
 
 %Retrieve all LSB watermarks
 for index = 1:length(lsbInputFiles)
